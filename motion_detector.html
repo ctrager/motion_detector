@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta name="Description" content="Video motion detection written by Corey Trager in HTML and Javascript">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Motion Detector</title>
+    <style>
+        body {
+            font-family: verdana, arial;
+            font-size: 16px;
+            margin: 20px;
+        }
+
+        #start_button {
+            font-size: 18px;
+            background-color: lightgreen;
+            width: 100px;
+        }
+
+        #live_motion_canvas {
+            border: 1px solid black;
+            background-color: green;
+        }
+
+        video {
+            border: 1px solid black;
+            background-color: lightgray;
+        }
+
+        #best_canvas {
+            border: 1px solid black;
+            background-color: black;
+        }
+
+        #config {
+            margin-bottom: 20px;
+            width: 900px;
+        }
+
+        #config div {
+            background-color: lightgray;
+            margin: 10px;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        #show_config {
+            display: none;
+            margin-top: 20px;
+            margin-bottom: 20px;
+
+        }
+    </style>
+    <script>
+        var first_time = true
+        var first_capture = true
+        var ready = false
+
+        var capture_canvas_el
+        var best_canvas_el
+        var diff_canvas_el
+        var small_green_canvas
+        var live_motion_canvas
+
+        var video_el
+        var score_el
+        var score_el2
+        var start_button
+
+        var capture_context
+        var diff_context
+        var small_green_context
+        var live_motion_context
+        var best_context
+
+        var diff_interval
+        var process_best_moment_timeout
+
+        var cycle_index = 0
+        var best_image_pct = 0
+        var best_image_data
+
+        var config = {}
+
+        var track
+
+        function on_load() {
+            console.log("on load")
+            score_el = document.getElementById("score_el")
+            score_el2 = document.getElementById("score_el2")
+            video_el = document.getElementById("video_el")
+            video_el.autoplay = true
+            start_button = document.getElementById("start_button")
+        }
+
+        function init_video() {
+
+            navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: true
+                })
+                .then(function (stream) {
+                    video_el.srcObject = stream
+                    track = stream.getVideoTracks()[0]
+                    console.log(track)
+                    config.width = track.getSettings().width
+                    config.height = track.getSettings().height
+                    start_detecting_motion()
+                    ready = true
+                })
+                .catch(function (err) {
+                    console.log(err)
+                })
+        }
+
+        function configure_elements() {
+
+            config.downscale_visible_width = Math.round(config.width * config.downscale_visible_factor)
+            config.downscale_visible_height = Math.round(config.height * config.downscale_visible_factor)
+
+            config.downscale_invisible_width = Math.round(config.width * config.downscale_invisible_factor)
+            config.downscale_invisible_height = Math.round(config.height * config.downscale_invisible_factor)
+
+            // visible elements
+            video_el = document.getElementById("video_el")
+            video_el.width = config.downscale_visible_width
+            video_el.height = config.downscale_visible_height
+            video_el.autoplay = true
+
+            best_canvas_el = document.getElementById("best_canvas")
+            best_canvas_el.width = config.downscale_visible_width
+            best_canvas_el.height = config.downscale_visible_height
+
+            live_motion_canvas = document.getElementById("live_motion_canvas")
+            live_motion_canvas.width = config.downscale_visible_width
+            live_motion_canvas.height = config.downscale_visible_height
+
+            // invisible elements
+            capture_canvas_el = document.createElement("canvas")
+            capture_canvas_el.width = config.downscale_visible_width
+            capture_canvas_el.height = config.downscale_visible_height
+
+            diff_canvas_el = document.createElement("canvas")
+            diff_canvas_el.width = config.downscale_invisible_width
+            diff_canvas_el.height = config.downscale_invisible_height
+
+            small_green_canvas = document.createElement("canvas")
+            small_green_canvas.width = config.downscale_invisible_width
+            small_green_canvas.height = config.downscale_invisible_height
+
+            capture_context = capture_canvas_el.getContext("2d");
+            best_context = best_canvas_el.getContext("2d");
+            diff_context = diff_canvas_el.getContext("2d");
+            small_green_context = small_green_canvas.getContext("2d");
+            live_motion_context = live_motion_canvas.getContext("2d");
+
+        }
+
+        function on_show_config() {
+            document.getElementById("show_config").style = "display: none;"
+            document.getElementById("config").style = "display:block;"
+        }
+
+        function on_hide_config() {
+            document.getElementById("config").style = "display:none;"
+            document.getElementById("show_config").style = "display: block;"
+        }
+
+        function load_config() {
+
+            config.downscale_visible_factor = document.getElementById("downscale_visible_factor_input").value
+            config.downscale_invisible_factor = document.getElementById("downscale_invisible_factor_input").value
+            config.rgb_threshold = document.getElementById("rgb_threshold_input").value
+            config.pct_of_pixels_threshold = document.getElementById("pct_of_pixels_threshold_input").value
+            config.image_pct_ceiling = document.getElementById("image_pct_ceiling_input").value
+            config.diff_interval_in_milliseconds = document.getElementById("diff_interval_in_milliseconds_input").value
+            config.cycle = document.getElementById("cycle_input").value.split(" ").map(x => +x)
+            config.enable_download = document.getElementById("enable_download_checkbox").checked
+
+            console.log(config)
+
+        }
+
+        function get_yyyy_mm_dd_hh_mm_ss(dt) {
+
+            var DD = ("0" + dt.getDate()).slice(-2);
+            var MM = ("0" + (dt.getMonth() + 1)).slice(-2);
+            var YYYY = dt.getFullYear();
+
+            var hh = ("0" + dt.getHours()).slice(-2);
+            var mm = ("0" + dt.getMinutes()).slice(-2);
+            var ss = ("0" + dt.getSeconds()).slice(-2);
+
+            var date_string = YYYY + "-" + MM + "-" + DD + " " + hh + ":" + mm + ":" + ss;
+
+            return date_string
+        }
+
+        function on_start_or_stop() {
+            if (start_button.innerText == "Start") {
+
+                on_start()
+                start_button.innerText = "Stop"
+                start_button.style.backgroundColor = "red"
+            } else {
+                on_stop()
+                start_button.innerText = "Start"
+                start_button.style.backgroundColor = "lightgreen"
+            }
+        }
+
+        function on_start() {
+            console.log("on_start")
+            if (first_time) {
+                console.log("first_time")
+                load_config()
+                first_time = false
+                init_video() // this will in turn call start_detecting_motion
+
+            } else {
+                start_detecting_motion()
+            }
+        }
+
+        function on_stop() {
+            clearInterval(diff_interval)
+            clearTimeout(process_best_moment_timeout)
+            //video_el.pause()
+        }
+
+        var first_download = true
+        var heartbeat
+
+        function start_detecting_motion() {
+
+            // force chrome to prompt
+            if (config.enable_download) {
+                if (first_download) {
+                    first_download = false
+                    download_two_text_files_to_force_prompt_for_permission()
+                }
+            }
+
+            if (config.enable_download) {
+                // write tiny text file every 30 minutes
+                setInterval(heartbeat, 60 * 1000 * 30)
+            }
+
+            //video_el.play()
+            load_config()
+            on_hide_config()
+            configure_elements()
+
+            // reset state
+            first_capture = true
+            cycle_index = 0
+            best_image_pct = 0
+
+            diff_interval = setInterval(diff_snapshot, config.diff_interval_in_milliseconds)
+        }
+
+        function heartbeat() {
+            var filename = "heartbeat_" + get_yyyy_mm_dd_hh_mm_ss(new Date()) + ".txt"
+            download_textfile("", filename)
+        }
+
+        function process_best_moment() {
+            console.log("process_best_moment", cycle_index, config.cycle[cycle_index], best_image_pct)
+
+            if (best_image_pct > 0) {
+                report(best_image_pct, best_image_data)
+                best_image_pct = 0
+            }
+
+            if (cycle_index + 1 == config.cycle.length) {
+                console.log("resetting")
+                cycle_index = 0
+            } else {
+                process_best_moment_timeout = setTimeout(process_best_moment, config.cycle[cycle_index] * 1000)
+                cycle_index++
+            }
+        }
+
+        function report(pct, image_data) {
+            console.log(best_image_pct, new Date().getTime())
+            best_context.putImageData(image_data, 0, 0)
+            score_el2.innerText = pct + "% at " + get_yyyy_mm_dd_hh_mm_ss(new Date())
+
+            if (config.enable_download) {
+                filename = make_filename(pct)
+                download_canvas(best_canvas, filename)
+            }
+        }
+
+        function download_two_text_files_to_force_prompt_for_permission() {
+            var filename = "text_" + get_yyyy_mm_dd_hh_mm_ss(new Date())
+            download_textfile("hello", filename + "_1st.txt")
+            // There's some sort of race condition that leads to "not allowed to load local resource"
+            // Introducing this delay fixes it
+            setTimeout(()=>download_textfile("hello", filename + "_2nd.txt"), 1000)
+        }
+
+        function make_filename(score) {
+            return "motion_" + get_yyyy_mm_dd_hh_mm_ss(new Date()) + "_score_" + score + ".png"
+        }
+
+        // https://jsfiddle.net/UselessCode/qm5AG/
+        var text_file_object_url
+
+        function download_textfile(text, filename) {
+
+            var data = new Blob([text], {
+                type: 'text/plain'
+            });
+
+            // If we are replacing a previously generated file we need to
+            // manually revoke the object URL to avoid memory leaks.
+            if (text_file_object_url !== null) {
+                window.URL.revokeObjectURL(text_file_object_url);
+            }
+
+            text_file_object_url = window.URL.createObjectURL(data);
+            var href_payload = text_file_object_url
+
+            create_and_click_on_download_link(filename, href_payload)
+        }
+
+        function download_canvas(canvas, filename) {
+            var href_payload = canvas.toDataURL("image/png")
+            create_and_click_on_download_link(filename, href_payload)
+        }
+
+        function create_and_click_on_download_link(filename, href_payload) {
+            var link = document.createElement('a');
+            link.setAttribute("download", filename)
+            link.href = href_payload
+
+            document.body.appendChild(link);
+
+            //link.innerText = "corey was here"
+
+            // wait for the link to be added to the document, then "click" it
+            window.requestAnimationFrame(function () {
+                // clicking link
+                var event = new MouseEvent('click');
+                link.dispatchEvent(event);
+                document.body.removeChild(link);
+            })
+        }
+
+        function diff_snapshot() {
+
+            if (!ready) return;
+
+            if (first_capture) {
+                first_capture = false
+                // capture an image, full size
+                capture_context.drawImage(video_el, 0, 0, config.width, config.height);
+                return
+            }
+
+            // put previous image on diff canvas, scaled down
+            diff_context.globalCompositeOperation = 'source-over';
+            diff_context.drawImage(capture_canvas_el, 0, 0, config.downscale_invisible_width, config
+                .downscale_invisible_height)
+
+            // capture an image, full size
+            capture_context.drawImage(video_el, 0, 0, config.downscale_visible_width, config.downscale_visible_height);
+
+            // put new image on diff canvas, scaled down, where only different pixes are lit up 
+            diff_context.globalCompositeOperation = 'difference';
+            diff_context.drawImage(capture_canvas_el, 0, 0, config.downscale_invisible_width, config
+                .downscale_invisible_height)
+
+            // get the image showing the different pixels
+            var image_data = diff_context.getImageData(0, 0, config.downscale_invisible_width, config
+                .downscale_invisible_height)
+
+            // calc the score of the diff 
+            var pixel_count = 0
+
+            for (var i = 0; i < image_data.data.length; i += 4) {
+                var r = image_data.data[i]
+                var g = image_data.data[i + 1]
+                var b = image_data.data[i + 2]
+
+                var rgb = r + g + b
+
+                // is the combined rgb bright enough?
+                if (rgb > config.rgb_threshold) {
+                    pixel_count++
+                }
+
+                // turn image green for fun, for display on the screen
+                var tot = r + g + b
+                if (tot > 255) tot = 255;
+                image_data.data[i] = 0
+                image_data.data[i + 1] = tot
+                image_data.data[i + 2] = 0
+
+            }
+
+            image_pct = Math.round(pixel_count * 100 / (config.downscale_invisible_height * config
+                .downscale_invisible_width))
+
+            // show the percent of pixels with "motion"
+            score_el.innerText = image_pct + "%"
+
+            // put the green image to another canvas
+            small_green_context.putImageData(image_data, 0, 0)
+
+            // scale up the green image, for better viewing
+            live_motion_context.drawImage(small_green_canvas, 0, 0, config.downscale_visible_width, config
+                .downscale_visible_height)
+
+            if (image_pct > config.pct_of_pixels_threshold && image_pct < config.image_pct_ceiling) {
+                console.log("image within threshold", image_pct)
+                var captured_motion_image_data = capture_context.getImageData(0, 0, config.downscale_visible_width,
+                    config.downscale_visible_height)
+
+                if (cycle_index == 0) {
+                    report(image_pct, captured_motion_image_data)
+                    setTimeout(process_best_moment, config.cycle[0] * 1000)
+                    cycle_index++
+                } else {
+                    if (image_pct > best_image_pct) {
+                        best_image_pct = image_pct
+                        best_image_data = captured_motion_image_data
+                    }
+                }
+            }
+
+        }
+    </script>
+</head>
+
+<body onload="on_load()">
+
+    <button id="start_button" onclick="on_start_or_stop()">Start</button>
+
+    <div id="show_config">
+        <a href="Javascript:on_show_config()">Show config</a>
+    </div>
+
+    <div id="config">
+        <div><a href="Javascript:on_hide_config()">Hide config</a>
+            &nbsp;
+            Changes don't take effect until you restart the motion detection.
+        </div>
+
+        <div>
+            The logic compares the latest snapshot with the previous snapshot. It calculates what percentage of the
+            pixels are different. If the percentage is above a threshold, then that is considered "motion".
+        </div>
+
+        <div>
+            Enable downloading snapshots where motion is detected. This will trigger two quick downloads at start in
+            order to get Chrome to ask your permission to download multiple files.
+            <input id="enable_download_checkbox" type="checkbox"></input>
+        </div>
+
+        <div>
+            Throttle reporting. After motion is first detected and reported, if there is still motion, keep reporting
+            motion after these intervals (in seconds).
+            For example, for "10 10 20 60 300 3600", report motion, then report again 10 seconds later (if there's
+            motion detected), then 10 seconds later again, then 20 seconds
+            after that, then 60 seconds after that, then 5 minutes after that, then one hour after that.
+            Then return to initial state of detecting motion right away.
+            <br>
+            <input id="cycle_input" value="4 4 4 4 10 10 1800" size="60"></input>
+        </div>
+
+        <div>
+            Snapshot interval in milliseconds (0-1000):
+            <input id="diff_interval_in_milliseconds_input" type="number" value="200" min="1" max="1000"
+                size="4"></input>
+        </div>
+        <div>
+            Pixel threshold - how different must a pixel (r + g + b values) be to be considered different from previous
+            snapshot?
+            (1-765):
+            <input id="rgb_threshold_input" type="number" value="75" min="1" max="765"></input>
+        </div>
+
+        <div>
+            Image threshold - percent of image pixels that must be different from previous snapshot to be considered
+            motion (1-80):
+            <input id="pct_of_pixels_threshold_input" type="number" value="15" min="1" max="80"></input>
+
+        </div>
+
+        <div>
+            Image threshold ceiling - there seem to be glitches where the logic reports 90%+ of the pixels changing.
+            This is to prevent false alarms (81-100):
+            <input id="image_pct_ceiling_input" type="number" value="85" min="81" max="100"></input>
+
+        </div>
+
+        <div>
+            Downscale full image for on screen display this factor (.1 to 1.0):
+            <input id="downscale_visible_factor_input" type="number" value=".9" min=".1" max="1.0" step=".1"></input>
+        </div>
+
+        <div>
+            Downscale full image for pixel analysis by this factor. Bigger is slower. (.1 to 1.0):
+            <input id="downscale_invisible_factor_input" type="number" value=".1" min=".1" max="1.0" step=".1"></input>
+        </div>
+
+
+    </div>
+    <table>
+        <tr>
+            <td>Live Video:</td>
+            <td>Motion <span id="score_el">0%</span></td>
+        </tr>
+        <tr>
+            <td><video id="video_el"></video></td>
+            <td><canvas id="live_motion_canvas"></canvas></td>
+        </tr>
+    </table>
+
+    <div>
+        Snapshot of most motion <span id="score_el2">0%</span>
+        <br>
+        <canvas id="best_canvas"></canvas>
+    </div>
+</body>
+
+</html>
