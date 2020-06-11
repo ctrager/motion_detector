@@ -296,6 +296,9 @@
         function report(pct, full_size_image_data, downscaled_image_data) {
             console.log(best_image_pct, new Date().getTime())
             best_context.putImageData(downscaled_image_data, 0, 0, 0, 0, config.downscale_visible_width, config.downscale_visible_height)
+            
+            //darken(best_canvas_el, best_context, .5)
+            
             full_size_context.putImageData(full_size_image_data, 0, 0)
             score_el2.innerText = pct + "% at " + get_yyyy_mm_dd_hh_mm_ss(new Date())
 
@@ -361,6 +364,17 @@
             })
         }
 
+        // function darken(canvas, context, factor) {
+        //     var image_data = context.getImageData(0, 0, canvas.width, canvas.height)
+        //     factor = 150
+        //     for (var i = 0; i < image_data.data.length; i += 4) {
+        //         image_data.data[i] = Math.min(factor, image_data.data[i])
+        //         image_data.data[i + 1] =  Math.min(factor, image_data.data[i + 1])
+        //         image_data.data[i + 2] =  Math.min(factor, image_data.data[i + 2])
+        //     }
+        //     context.putImageData(image_data, 0, 0)
+        // }
+
         function diff_snapshot() {
 
             if (!ready) return;
@@ -379,6 +393,7 @@
 
             // capture an image
             capture_context.drawImage(video_el, 0, 0, config.downscale_visible_width, config.downscale_visible_height);
+            
             // capture full size
             full_size_context.drawImage(video_el, 0, 0)
 
